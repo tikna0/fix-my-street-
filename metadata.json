@@ -1,0 +1,8 @@
+{
+  "name": "CivicPulse AI - Civic Issue Detection & Priority Prediction",
+  "description": "AI-Based Civic Issue Detection & Priority Prediction System for urban municipal infrastructure management.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
