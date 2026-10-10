@@ -15,7 +15,10 @@ import {
   RefreshCw,
   Clock,
   Layers,
-  Activity
+  Activity,
+  X,
+  FlipHorizontal,
+  CircleDot
 } from 'lucide-react';
 import { CivicReport, CivicCategory, PriorityLevel } from '../types/civic';
 import { ReportMap } from '../components/ReportMap';
@@ -35,6 +38,16 @@ export const HomePage: React.FC<HomePageProps> = ({ reports, onAddReport, onNavi
   const [severity, setSeverity] = useState<number>(4);
   const [affectedPeople, setAffectedPeople] = useState<'< 50' | '50 - 200' | '200 - 1000' | '1000+'>('200 - 1000');
   
+  // Camera state
+  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'environment' | 'user'>('environment');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isCapturingFlash, setIsCapturingFlash] = useState<boolean>(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mobileCameraInputRef = useRef<HTMLInputElement | null>(null);
+
   // Geolocation state
   const [coords, setCoords] = useState<{ lat: number; lng: number }>({ lat: 37.7749, lng: -122.4194 });
   const [accuracy, setAccuracy] = useState<number | undefined>(15);
@@ -138,8 +151,100 @@ export const HomePage: React.FC<HomePageProps> = ({ reports, onAddReport, onNavi
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
       }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
     };
   }, []);
+
+  // Live Camera Controls
+  const startCamera = async (facing: 'environment' | 'user' = 'environment') => {
+    setCameraError(null);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('Camera API is not supported by your browser or environment.');
+      return;
+    }
+
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+
+      setIsCameraActive(true);
+      setCameraFacingMode(facing);
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: facing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+      } catch {
+        // Fallback without strict facing mode
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+    } catch (err: any) {
+      console.warn('Camera error:', err);
+      setCameraError(`Camera access failed: ${err.message || 'Permission denied'}. Please use file upload instead.`);
+      setIsCameraActive(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setIsCameraActive(false);
+    setCameraError(null);
+  };
+
+  const flipCamera = () => {
+    const nextMode = cameraFacingMode === 'environment' ? 'user' : 'environment';
+    startCamera(nextMode);
+  };
+
+  const capturePhoto = () => {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const width = video.videoWidth || 640;
+    const height = video.videoHeight || 480;
+
+    setIsCapturingFlash(true);
+    setTimeout(() => setIsCapturingFlash(false), 200);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      if (cameraFacingMode === 'user') {
+        ctx.translate(width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      setImagePreview(dataUrl);
+      setImageFile(null);
+      stopCamera();
+      setToastMessage('Live camera snapshot captured successfully!');
+      setTimeout(() => setToastMessage(null), 3000);
+    }
+  };
 
   // Image upload handling
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -148,10 +253,14 @@ export const HomePage: React.FC<HomePageProps> = ({ reports, onAddReport, onNavi
       setImageFile(file);
       const url = URL.createObjectURL(file);
       setImagePreview(url);
+      if (isCameraActive) stopCamera();
+      setToastMessage('Image uploaded from storage');
+      setTimeout(() => setToastMessage(null), 2500);
     }
   };
 
   const setSampleImage = (category: string, url: string, defaultDesc: string) => {
+    if (isCameraActive) stopCamera();
     setImagePreview(url);
     setDescription(defaultDesc);
     setImageFile(null);
@@ -488,75 +597,227 @@ export const HomePage: React.FC<HomePageProps> = ({ reports, onAddReport, onNavi
 
           <form onSubmit={handleSubmitReport} className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             {/* Left Column: Image Upload & Preview */}
-            <div className="lg:col-span-5 space-y-5">
-              <label className="block text-xs font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-300">
-                1. Incident Photograph (Required)
-              </label>
-
-              <div className="border-2 border-dashed border-neutral-300 dark:border-neutral-700 hover:border-[#FFA649] dark:hover:border-[#FFA649] rounded-xl p-4 transition-colors text-center relative group">
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                />
-                
-                {imagePreview ? (
-                  <div className="relative rounded-lg overflow-hidden aspect-4/3 bg-neutral-900">
-                    <img
-                      src={imagePreview}
-                      alt="Uploaded civic issue preview"
-                      className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white p-2">
-                      <Camera className="w-8 h-8 mb-1" />
-                      <span className="text-xs font-semibold">Click or drag to change image</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="py-12 flex flex-col items-center justify-center space-y-3 text-neutral-500">
-                    <Upload className="w-10 h-10 text-neutral-400 group-hover:text-[#FFA649] transition-colors" />
-                    <div>
-                      <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Click to upload</span>
-                      <span className="text-xs"> or drag and drop JPG, PNG</span>
-                    </div>
-                    <span className="text-[11px] text-neutral-400">High resolution road/sidewalk photo recommended</span>
-                  </div>
-                )}
+            <div className="lg:col-span-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-300">
+                  1. Incident Photograph (Required)
+                </label>
+                <span className="text-[11px] text-neutral-500">Live Camera or File</span>
               </div>
 
+              {/* Hidden file inputs */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+              <input
+                ref={mobileCameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+
+              {/* Camera Error Alert */}
+              {cameraError && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{cameraError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCameraError(null)}
+                    className="text-red-400 hover:text-red-700"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Photo Display / Live Viewfinder Box */}
+              {isCameraActive ? (
+                <div className="relative rounded-xl overflow-hidden aspect-4/3 bg-black border-2 border-[#FFA649] shadow-lg flex flex-col justify-between">
+                  {/* Live Video Feed */}
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+
+                  {/* Shutter Flash Animation */}
+                  {isCapturingFlash && (
+                    <div className="absolute inset-0 bg-white transition-opacity duration-200 z-30 pointer-events-none" />
+                  )}
+
+                  {/* Viewfinder Target Reticle */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
+                    <div className="w-32 h-32 border-2 border-white/40 border-dashed rounded-lg"></div>
+                  </div>
+
+                  {/* Top HUD Controls */}
+                  <div className="relative z-20 p-3 bg-gradient-to-b from-black/70 to-transparent flex items-center justify-between text-white">
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></span>
+                      <span>Live Camera Viewfinder</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={flipCamera}
+                        title="Switch Front/Back Camera"
+                        className="p-1.5 rounded-md bg-white/20 hover:bg-white/30 text-white text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                      >
+                        <FlipHorizontal className="w-3.5 h-3.5" />
+                        <span className="text-[10px]">Flip</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={stopCamera}
+                        title="Close Camera"
+                        className="p-1.5 rounded-md bg-white/20 hover:bg-red-600 text-white transition-colors cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Bottom HUD Shutter Controls */}
+                  <div className="relative z-20 p-4 bg-gradient-to-t from-black/80 via-black/40 to-transparent flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={stopCamera}
+                      className="px-3 py-1.5 text-xs text-neutral-300 hover:text-white bg-white/10 hover:bg-white/20 rounded-md transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={capturePhoto}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-[#FFA649] hover:bg-[#ffb466] text-[#283845] font-bold text-xs rounded-full shadow-lg transition-transform active:scale-95 cursor-pointer ring-4 ring-[#FFA649]/30"
+                    >
+                      <CircleDot className="w-4 h-4 animate-spin text-[#283845]" />
+                      <span>Capture Photo</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-3 py-1.5 text-xs text-neutral-300 hover:text-white bg-white/10 hover:bg-white/20 rounded-md transition-colors cursor-pointer"
+                    >
+                      Upload File
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="border-2 border-dashed border-neutral-300 dark:border-neutral-700 hover:border-[#FFA649] dark:hover:border-[#FFA649] rounded-xl p-3 transition-colors text-center relative group bg-neutral-50/50 dark:bg-neutral-900/50">
+                    {imagePreview ? (
+                      <div className="relative rounded-lg overflow-hidden aspect-4/3 bg-neutral-900 shadow-inner">
+                        <img
+                          src={imagePreview}
+                          alt="Uploaded civic issue preview"
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 text-white p-3">
+                          <span className="text-xs font-semibold mb-1">Update or Retake Photo:</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => startCamera()}
+                              className="px-3 py-1.5 bg-[#FFA649] text-[#283845] font-bold text-xs rounded-md shadow-sm hover:bg-[#ffb466] flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <Camera className="w-3.5 h-3.5" />
+                              <span>Use Camera</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => fileInputRef.current?.click()}
+                              className="px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white font-semibold text-xs rounded-md flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Browse Files</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="py-10 flex flex-col items-center justify-center space-y-3 text-neutral-500">
+                        <Upload className="w-10 h-10 text-neutral-400 group-hover:text-[#FFA649] transition-colors" />
+                        <div>
+                          <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Click to upload image</span>
+                          <span className="text-xs"> or drag &amp; drop</span>
+                        </div>
+                        <span className="text-[11px] text-neutral-400">JPG, PNG up to 10MB</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Primary Camera & Upload Trigger Toolbar */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startCamera()}
+                      className="py-2.5 px-3 bg-[#FFA649] hover:bg-[#ffb466] text-[#283845] font-bold text-xs rounded-lg transition-all shadow-sm active:scale-98 flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Camera className="w-4 h-4" />
+                      <span>Take Photo (Camera)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="py-2.5 px-3 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 font-semibold text-xs rounded-lg transition-all border border-neutral-300 dark:border-neutral-700 active:scale-98 flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
+                      <span>Upload from Files</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Quick sample pickers */}
-              <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400">
-                  Quick Sample Presets:
+              <div className="space-y-1.5 pt-1">
+                <div className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 flex items-center justify-between">
+                  <span>Quick Test Presets:</span>
+                  <span className="text-[10px] text-neutral-400">Click to preview</span>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
                     onClick={() => setSampleImage('Pothole', '/src/assets/images/civic_pothole_road_1791562659993.jpg', 'Deep asphalt pothole on main artery')}
-                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors"
+                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors cursor-pointer"
                   >
                     Pothole
                   </button>
                   <button
                     type="button"
                     onClick={() => setSampleImage('Garbage Overflow', '/src/assets/images/civic_garbage_overflow_1791562673310.jpg', 'Overflowing public bins spilling onto sidewalk')}
-                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors"
+                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors cursor-pointer"
                   >
                     Garbage Bins
                   </button>
                   <button
                     type="button"
                     onClick={() => setSampleImage('Streetlight', '/src/assets/images/civic_damaged_streetlight_1791562688586.jpg', 'Cracked lantern fixture dangling on sidewalk')}
-                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors"
+                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors cursor-pointer"
                   >
                     Streetlight
                   </button>
                   <button
                     type="button"
                     onClick={() => setSampleImage('Blocked Drain', '/src/assets/images/civic_blocked_drain_1791562701646.jpg', 'Storm drain inlet clogged with trash and leaves')}
-                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors"
+                    className="text-[11px] px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-[#FFA649]/20 hover:text-[#283845] dark:hover:text-[#FFA649] rounded transition-colors cursor-pointer"
                   >
                     Drain Clog
                   </button>
